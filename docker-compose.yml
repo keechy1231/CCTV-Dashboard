@@ -1,0 +1,56 @@
+services:
+  go2rtc:
+    image: alexxit/go2rtc:1.9.14
+    container_name: cctv-go2rtc
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/config/start.sh"]
+    environment:
+      CAMERA_1_URL: ${CAMERA_1_URL}
+      CAMERA_2_URL: ${CAMERA_2_URL}
+      CAMERA_3_URL: ${CAMERA_3_URL}
+      CAMERA_4_URL: ${CAMERA_4_URL}
+      WEBRTC_HOST: ${WEBRTC_HOST:-10.10.1.6}
+    volumes:
+      - ./go2rtc:/config:ro
+    ports:
+      - "8555:8555/tcp"
+      - "8555:8555/udp"
+    networks:
+      - cctv
+
+  auth:
+    build:
+      context: ./auth
+    container_name: cctv-auth
+    restart: unless-stopped
+    environment:
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
+      NVR_HOST: ${NVR_HOST:-10.10.1.2}
+    networks:
+      - cctv
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cctv-web
+    restart: unless-stopped
+    depends_on:
+      - go2rtc
+      - auth
+    environment:
+      CAMERA_1_NAME: ${CAMERA_1_NAME:-Camera 1}
+      CAMERA_2_NAME: ${CAMERA_2_NAME:-Camera 2}
+      CAMERA_3_NAME: ${CAMERA_3_NAME:-Camera 3}
+      CAMERA_4_NAME: ${CAMERA_4_NAME:-Camera 4}
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks:
+      - cctv
+
+networks:
+  cctv:
+    driver: bridge
