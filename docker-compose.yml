@@ -29,6 +29,10 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
       NVR_HOST: ${NVR_HOST:-10.10.1.2}
+      NVR_USERNAME: ${NVR_USERNAME:-}
+      NVR_PASSWORD: ${NVR_PASSWORD:-}
+    volumes:
+      - playback-cache:/var/cache/cctv
     networks:
       - cctv
 
@@ -54,3 +58,6 @@ services:
 networks:
   cctv:
     driver: bridge
+
+volumes:
+  playback-cache:

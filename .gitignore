@@ -17,6 +17,7 @@ backend/coverage.out
 # IDEs
 .vscode/
 .idea/
+.agents
 
 # OS
 .DS_Store
