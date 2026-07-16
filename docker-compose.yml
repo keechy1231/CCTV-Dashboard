@@ -31,6 +31,7 @@ services:
       NVR_HOST: ${NVR_HOST:-10.10.1.2}
       NVR_USERNAME: ${NVR_USERNAME:-}
       NVR_PASSWORD: ${NVR_PASSWORD:-}
+      NVR_TIMEZONE: ${NVR_TIMEZONE:-Europe/London}
     volumes:
       - playback-cache:/var/cache/cctv
     networks:

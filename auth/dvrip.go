@@ -153,10 +153,6 @@ func readDVRIPReply(conn net.Conn, expected uint16) (*dvripReply, error) {
 	}
 }
 
-func (c *dvripClient) openRecording(name string) (*dvripStream, error) {
-	return c.openRecordingRange(name, time.Time{}, time.Time{})
-}
-
 func (c *dvripClient) openRecordingRange(name string, rangeStart, rangeEnd time.Time) (*dvripStream, error) {
 	dataConn, err := net.DialTimeout("tcp", net.JoinHostPort(nvrHost, fmt.Sprint(dvripPort)), 3*time.Second)
 	if err != nil {
@@ -222,8 +218,8 @@ func playbackTimes(name string) (time.Time, time.Time, bool) {
 	for i := range numbers {
 		numbers[i], _ = strconv.Atoi(m[i+1])
 	}
-	start := time.Date(numbers[0], time.Month(numbers[1]), numbers[2], numbers[3], numbers[4], numbers[5], 0, time.Local)
-	end := time.Date(numbers[0], time.Month(numbers[1]), numbers[2], numbers[6], numbers[7], numbers[8], 0, time.Local)
+	start := time.Date(numbers[0], time.Month(numbers[1]), numbers[2], numbers[3], numbers[4], numbers[5], 0, nvrLocation)
+	end := time.Date(numbers[0], time.Month(numbers[1]), numbers[2], numbers[6], numbers[7], numbers[8], 0, nvrLocation)
 	if !end.After(start) {
 		end = end.AddDate(0, 0, 1)
 	}
@@ -326,14 +322,6 @@ func (s *dvripStream) WriteRemainingTo(w io.Writer, prefix []byte, ended bool) e
 			return nil
 		}
 	}
-}
-
-func (s *dvripStream) WriteTo(w io.Writer) error {
-	_, prefix, ended, err := s.ProbeVideo()
-	if err != nil {
-		return err
-	}
-	return s.WriteRemainingTo(w, prefix, ended)
 }
 
 func parseDVRIPSize(value interface{}) int64 {

@@ -1,1 +1,0 @@
-.cache-progress svg{animation:cache-spin 1.2s linear infinite}.cache-progress progress{width:min(420px,80%);height:10px;accent-color:#2387ff}@keyframes cache-spin{to{transform:rotate(360deg)}}

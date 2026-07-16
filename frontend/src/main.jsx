@@ -12,7 +12,6 @@ import {
   Camera,
   ChevronRight,
   Download,
-  FileVideo,
   Gauge,
   Grid2X2,
   LayoutDashboard,
@@ -21,10 +20,8 @@ import {
   Minimize2,
   Menu,
   MonitorPlay,
-  Play,
   RefreshCw,
   RotateCcw,
-  Search,
   Server,
   Settings,
   ShieldCheck,
@@ -34,9 +31,6 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import "./playback.css";
-import "./player.css";
-import "./cache.css";
-import "./segmented.css";
 import "./live.css";
 
 const PREF_KEY = "cctv-dashboard-prefs-v3";
@@ -325,21 +319,20 @@ const nav = [
   ["dashboard", "Overview", LayoutDashboard],
   ["live", "Live view", Grid2X2],
   ["playback", "Playback", MonitorPlay],
-  ["recordings", "Recordings", FileVideo],
   ["events", "Events", Activity],
   ["cameras", "Cameras", Camera],
   ["settings", "Settings", Settings],
 ];
-function ArchivePage({ cameras, recordingsOnly = false }) {
+function ArchivePage({ cameras }) {
   return (
     <div className="page">
       <div className="page-title">
         <div>
           <p>NVR archive</p>
-          <h1>{recordingsOnly ? "Recordings" : "Playback"}</h1>
+          <h1>Playback</h1>
         </div>
       </div>
-      {recordingsOnly ? <RecordingBrowser cameras={cameras} compact /> : <DailyPlayback cameras={cameras} />}
+      <DailyPlayback cameras={cameras} />
     </div>
   );
 }
@@ -666,8 +659,6 @@ function App() {
     );
   else if (page === "playback")
     body = <ArchivePage cameras={cameras} />;
-  else if (page === "recordings")
-    body = <ArchivePage cameras={cameras} recordingsOnly />;
   else
     body = (
       <div className="page">
@@ -750,318 +741,4 @@ function App() {
     </div>
   );
 }
-function localInput(date) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}T${p(date.getHours())}:${p(date.getMinutes())}`;
-}
-
-function clockTime(seconds) {
-  const value = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(value / 3600);
-  const m = Math.floor((value % 3600) / 60);
-  const s = value % 60;
-  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function SegmentedPlayer({ file, onError }) {
-  const ref = useRef(null);
-  const start = new Date(file.start.replace(" ", "T"));
-  let end = new Date(file.end.replace(" ", "T"));
-  if (end <= start) end = new Date(end.getTime() + 86400000);
-  const duration = Math.max(1, Math.round((end - start) / 1000));
-  const [position, setPosition] = useState(0);
-  const [segment, setSegment] = useState(0);
-  const [scrubPosition, setScrubPosition] = useState(null);
-  const pending = useRef(0);
-  const prefetched = useRef(-1);
-  const segmentLength = Math.min(30, duration - segment);
-  const segmentURL = () => {
-    const q = new URLSearchParams({
-      file: file.name,
-      offset: String(segment),
-      duration: String(segmentLength),
-    });
-    return `/api/playback/segment?${q}`;
-  };
-  function jump(value) {
-    const next = Math.min(Math.max(0, Number(value)), duration - 0.01);
-    const nextSegment = Math.floor(next / 30) * 30;
-    pending.current = next - nextSegment;
-    setPosition(next);
-    if (nextSegment === segment && ref.current) {
-      ref.current.currentTime = pending.current;
-    } else {
-      setSegment(nextSegment);
-    }
-  }
-  function advance() {
-    if (segment + segmentLength < duration) jump(segment + segmentLength);
-  }
-  function finishScrub(value) {
-    setScrubPosition(null);
-    jump(value);
-  }
-  return (
-    <div className="segmented-player">
-      <video
-        ref={ref}
-        key={segment}
-        controls
-        autoPlay
-        playsInline
-        src={segmentURL()}
-        onLoadedMetadata={(e) => {
-          if (pending.current > 0) e.currentTarget.currentTime = pending.current;
-          pending.current = 0;
-        }}
-        onTimeUpdate={(e) => {
-          const next = Math.min(duration, segment + e.currentTarget.currentTime);
-          setPosition(next);
-          const upcoming = segment + 30;
-          if (e.currentTarget.currentTime > 18 && upcoming < duration && prefetched.current !== upcoming) {
-            prefetched.current = upcoming;
-            const q = new URLSearchParams({file:file.name,offset:String(upcoming),duration:String(Math.min(30,duration-upcoming))});
-            fetch(`/api/playback/segment?${q}`).catch(() => {});
-          }
-        }}
-        onEnded={advance}
-        onError={() => onError("Fast playback could not load this section.")}
-      />
-      <div className="archive-scrubber">
-        <span>{clockTime(scrubPosition ?? position)}</span>
-        <input
-          type="range"
-          min="0"
-          max={duration}
-          step="1"
-          value={scrubPosition ?? position}
-          onPointerDown={() => setScrubPosition(position)}
-          onChange={(e) => setScrubPosition(Number(e.target.value))}
-          onPointerUp={(e) => finishScrub(e.currentTarget.value)}
-          onPointerCancel={() => setScrubPosition(null)}
-          onKeyUp={(e) => finishScrub(e.currentTarget.value)}
-        />
-        <span>{clockTime(duration)}</span>
-      </div>
-    </div>
-  );
-}
-
-function RecordingBrowser({ cameras, compact = false }) {
-  const now = new Date(),
-    day = new Date(now);
-  day.setHours(0, 0, 0, 0);
-  const [channel, setChannel] = useState(0),
-    [start, setStart] = useState(localInput(day)),
-    [end, setEnd] = useState(localInput(now)),
-    [files, setFiles] = useState([]),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    [selected, setSelected] = useState(null),
-    [playback, setPlayback] = useState(null),
-    prepareSeq = useRef(0);
-  useEffect(
-    () => () => {
-      prepareSeq.current++;
-    },
-    [],
-  );
-  async function search(e) {
-    e.preventDefault();
-    prepareSeq.current++;
-    setBusy(true);
-    setError("");
-    setSelected(null);
-    setPlayback(null);
-    try {
-      const q = new URLSearchParams({
-        channel: String(channel),
-        start: new Date(start).toISOString(),
-        end: new Date(end).toISOString(),
-      });
-      const r = await api(`/api/recordings?${q}`);
-      setFiles(r.recordings || []);
-    } catch (x) {
-      setFiles([]);
-      setError(x.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  function play(file) {
-    prepareSeq.current++;
-    setError("");
-    setSelected(file);
-    setPlayback({
-      status: "streaming",
-      file,
-    });
-  }
-  async function prepareFull(file) {
-    const seq = ++prepareSeq.current;
-    setError("");
-    setSelected(file);
-    setPlayback({ status: "preparing", progress: 0 });
-    try {
-      const q = new URLSearchParams({
-        file: file.name,
-        size_kb: String(file.size_kb || 0),
-      });
-      let job = await api(`/api/playback/prepare?${q}`, { method: "POST" });
-      while (seq === prepareSeq.current) {
-        setPlayback(job);
-        if (job.status === "ready") {
-          setPlayback({ ...job, url: `/api/playback/file?key=${job.key}` });
-          return;
-        }
-        if (job.status === "error")
-          throw new Error(job.error || "Recording preparation failed");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        job = await api(`/api/playback/status?key=${job.key}`);
-      }
-    } catch (x) {
-      if (seq === prepareSeq.current) {
-        setPlayback({ status: "error" });
-        setError(x.message);
-      }
-    }
-  }
-  return (
-    <div className="recording-layout">
-      <section className="panel recording-search">
-        <header>
-          <div>
-            <h2>Find recordings</h2>
-            <span>Search video stored on the NVR</span>
-          </div>
-        </header>
-        <form onSubmit={search}>
-          <label>
-            Camera
-            <select
-              value={channel}
-              onChange={(e) => setChannel(+e.target.value)}
-            >
-              {cameras.map((c, i) => (
-                <option value={i} key={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            From
-            <input
-              type="datetime-local"
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-            />
-          </label>
-          <label>
-            To
-            <input
-              type="datetime-local"
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-            />
-          </label>
-          <button disabled={busy}>
-            <Search />
-            {busy ? "Searching…" : "Search recorder"}
-          </button>
-        </form>
-        {error && <div className="error recording-error">{error}</div>}
-      </section>
-      {!compact && (
-        <section className="panel playback-stage">
-          {playback?.status === "streaming" ? (
-            <SegmentedPlayer
-              key={playback.file.name}
-              file={playback.file}
-              onError={(message) => {
-                setError(message);
-                setPlayback((current) => ({
-                  ...current,
-                  status: "segment-error",
-                }));
-              }}
-            />
-          ) : playback?.status === "ready" ? (
-            <video
-              key={playback.key}
-              controls
-              autoPlay
-              playsInline
-              src={playback.url}
-              onError={() =>
-                setError("The prepared recording could not be played.")
-              }
-            />
-          ) : playback?.status === "preparing" ? (
-            <div className="playback-placeholder cache-progress">
-              <RefreshCw />
-              <b>Preparing recording… {playback.progress || 0}%</b>
-              <progress max="100" value={playback.progress || 0} />
-              <span>
-                Downloading once from the NVR and building a seekable MP4.
-              </span>
-            </div>
-          ) : playback?.status === "segment-error" ? (
-            <div className="playback-placeholder">
-              <MonitorPlay />
-              <b>Fast playback was unavailable</b>
-              <span>You can still prepare the complete recording.</span>
-              <button onClick={() => prepareFull(playback.file)}>
-                Prepare full recording
-              </button>
-            </div>
-          ) : (
-            <div className="playback-placeholder">
-              <MonitorPlay />
-              <b>Select a recording</b>
-              <span>Choose a clip from the search results.</span>
-            </div>
-          )}
-        </section>
-      )}
-      <section className={`panel recording-results ${compact ? "wide" : ""}`}>
-        <header>
-          <h2>Recordings</h2>
-          <span>{files.length} found</span>
-        </header>
-        {files.length ? (
-          files.map((f, i) => (
-            <button
-              className={selected?.name === f.name ? "selected" : ""}
-              key={`${f.name}-${i}`}
-              onClick={() => play(f)}
-            >
-              <FileVideo />
-              <div>
-                <b>
-                  {f.start} – {f.end?.split(" ")[1]}
-                </b>
-                <small>
-                  {cameras[f.channel]?.name || `Channel ${f.channel + 1}`} ·{" "}
-                  {f.size_kb
-                    ? `${Math.round(f.size_kb / 1024)} MB`
-                    : "Size unavailable"}
-                </small>
-              </div>
-              {!compact && <Play />}
-            </button>
-          ))
-        ) : (
-          <div className="no-recordings">
-            <CalendarClock />
-            <span>
-              {busy ? "Querying the NVR…" : "Choose a time range and search."}
-            </span>
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
 createRoot(document.getElementById("root")).render(<App />);

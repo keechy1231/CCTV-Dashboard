@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata"
 )
 
 type loginRequest struct {
@@ -44,6 +45,7 @@ type serviceStatus struct {
 }
 
 var username, password, nvrHost, nvrUsername, nvrPassword string
+var nvrLocation *time.Location
 var secret []byte
 var ttl time.Duration
 var eventsMu sync.Mutex
@@ -142,6 +144,15 @@ func main() {
 	nvrHost = os.Getenv("NVR_HOST")
 	nvrUsername = os.Getenv("NVR_USERNAME")
 	nvrPassword = os.Getenv("NVR_PASSWORD")
+	timezone := os.Getenv("NVR_TIMEZONE")
+	if timezone == "" {
+		timezone = "Europe/London"
+	}
+	var locationErr error
+	nvrLocation, locationErr = time.LoadLocation(timezone)
+	if locationErr != nil {
+		log.Fatalf("invalid NVR_TIMEZONE %q: %v", timezone, locationErr)
+	}
 	secret = []byte(os.Getenv("SESSION_SECRET"))
 	if username == "" {
 		username = "admin"
@@ -247,114 +258,12 @@ func main() {
 		eventsMu.Unlock()
 		jsonResponse(w, 200, map[string]any{"events": snapshot})
 	}))
-	mux.HandleFunc("/api/recordings", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
-			return
-		}
-		if nvrUsername == "" {
-			jsonResponse(w, 503, map[string]string{"error": "NVR credentials are not configured"})
-			return
-		}
-		channel, err := strconv.Atoi(r.URL.Query().Get("channel"))
-		if err != nil || channel < 0 || channel > 31 {
-			jsonResponse(w, 400, map[string]string{"error": "channel must be between 0 and 31"})
-			return
-		}
-		start, err1 := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
-		end, err2 := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
-		if err1 != nil || err2 != nil || !end.After(start) || end.Sub(start) > 48*time.Hour {
-			jsonResponse(w, 400, map[string]string{"error": "select a valid period of up to 48 hours"})
-			return
-		}
-		client, err := dialDVRIP(nvrHost, nvrUsername, nvrPassword)
-		if err != nil {
-			jsonResponse(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		defer client.close()
-		files, err := client.recordings(channel, start, end)
-		if err != nil {
-			jsonResponse(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		addEvent("playback", fmt.Sprintf("Searched channel %d recordings", channel+1), r.RemoteAddr)
-		jsonResponse(w, 200, map[string]any{"recordings": files, "channel": channel, "start": start, "end": end})
-	}))
-	mux.HandleFunc("/api/playback/prepare", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
-			return
-		}
-		name := r.URL.Query().Get("file")
-		if name == "" || len(name) > 1024 || strings.ContainsAny(name, "\x00\r\n") {
-			jsonResponse(w, 400, map[string]string{"error": "invalid recording file"})
-			return
-		}
-		sizeKB, _ := strconv.ParseInt(r.URL.Query().Get("size_kb"), 10, 64)
-		job := playbackCache.prepare(name, sizeKB)
-		jsonResponse(w, 202, job)
-	}))
-	mux.HandleFunc("/api/playback/segment", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
-			return
-		}
-		servePlaybackSegment(w, r)
-	}))
 	mux.HandleFunc("/api/playback/hls", requireSession(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
 			return
 		}
 		servePlaybackHLS(w, r)
-	}))
-	mux.HandleFunc("/api/playback/status", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		if len(key) != 64 {
-			jsonResponse(w, 400, map[string]string{"error": "invalid cache key"})
-			return
-		}
-		if _, err := hex.DecodeString(key); err != nil {
-			jsonResponse(w, 400, map[string]string{"error": "invalid cache key"})
-			return
-		}
-		job, ok := playbackCache.status(key)
-		if !ok {
-			jsonResponse(w, 404, map[string]string{"error": "cache job not found"})
-			return
-		}
-		jsonResponse(w, 200, job)
-	}))
-	mux.HandleFunc("/api/playback/file", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		if len(key) != 64 {
-			jsonResponse(w, 400, map[string]string{"error": "invalid cache key"})
-			return
-		}
-		if _, err := hex.DecodeString(key); err != nil {
-			jsonResponse(w, 400, map[string]string{"error": "invalid cache key"})
-			return
-		}
-		job, ok := playbackCache.status(key)
-		if !ok || job.Status != "ready" {
-			jsonResponse(w, 409, map[string]string{"error": "recording is still being prepared"})
-			return
-		}
-		file, err := os.Open(cachedPath(key))
-		if err != nil {
-			jsonResponse(w, 404, map[string]string{"error": "cached recording not found"})
-			return
-		}
-		defer file.Close()
-		info, err := file.Stat()
-		if err != nil {
-			jsonResponse(w, 500, map[string]string{"error": "could not read cached recording"})
-			return
-		}
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("Cache-Control", "private, max-age=3600")
-		http.ServeContent(w, r, "recording.mp4", info.ModTime(), file)
 	}))
 	mux.HandleFunc("/api/about", requireSession(func(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, map[string]any{"name": "CCTV Dashboard", "version": "1.0.0", "status": "operational", "nvr_driver": "XMeye DVRIP", "recording_playback": "available"})

@@ -12,25 +12,48 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
+const playbackCacheDir = "/var/cache/cctv"
 const hlsSegmentSeconds = 30
 
 // The recorder has a small DVRIP connection limit and live view already uses
 // several slots. Keep archive reads bounded so HLS prefetch cannot exhaust it.
 var hlsBuildSlot = make(chan struct{}, 1)
+var segmentBuildLocks sync.Map
+
+type limitedBuffer struct{ data []byte }
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.data = append(b.data, p...)
+	if len(b.data) > 4096 {
+		b.data = b.data[len(b.data)-4096:]
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string { return string(b.data) }
+
+func lockPlaybackSegment(path string) func() {
+	value, _ := segmentBuildLocks.LoadOrStore(path, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
+}
 
 func servePlaybackHLS(w http.ResponseWriter, r *http.Request) {
 	channel, channelErr := strconv.Atoi(r.URL.Query().Get("channel"))
-	day, dateErr := time.ParseInLocation("2006-01-02", r.URL.Query().Get("date"), time.Local)
+	day, dateErr := time.ParseInLocation("2006-01-02", r.URL.Query().Get("date"), nvrLocation)
 	if channelErr != nil || channel < 0 || channel > 31 || dateErr != nil {
 		jsonResponse(w, 400, map[string]string{"error": "invalid playback channel or date"})
 		return
 	}
 	dayEnd := day.Add(24 * time.Hour)
-	if time.Now().Before(dayEnd) {
-		dayEnd = time.Now()
+	nvrNow := time.Now().In(nvrLocation)
+	if nvrNow.Before(dayEnd) {
+		dayEnd = nvrNow
 	}
 	length := int(dayEnd.Sub(day).Seconds())
 	if length < 1 {
