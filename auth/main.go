@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,12 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,9 +48,6 @@ var secret []byte
 var ttl time.Duration
 var eventsMu sync.Mutex
 var events []auditEvent
-var playbackMu sync.Mutex
-var playbackCancel context.CancelFunc
-var playbackGeneration uint64
 
 func jsonResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -288,106 +281,6 @@ func main() {
 		addEvent("playback", fmt.Sprintf("Searched channel %d recordings", channel+1), r.RemoteAddr)
 		jsonResponse(w, 200, map[string]any{"recordings": files, "channel": channel, "start": start, "end": end})
 	}))
-	mux.HandleFunc("/api/playback", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
-			return
-		}
-		name := r.URL.Query().Get("file")
-		if name == "" || len(name) > 1024 || strings.ContainsAny(name, "\x00\r\n") {
-			jsonResponse(w, 400, map[string]string{"error": "invalid recording file"})
-			return
-		}
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
-		playbackMu.Lock()
-		if playbackCancel != nil {
-			playbackCancel()
-		}
-		playbackGeneration++
-		generation := playbackGeneration
-		ctx, cancel := context.WithCancel(r.Context())
-		playbackCancel = cancel
-		playbackMu.Unlock()
-		defer func() {
-			cancel()
-			playbackMu.Lock()
-			if playbackGeneration == generation {
-				playbackCancel = nil
-			}
-			playbackMu.Unlock()
-		}()
-		client, err := dialDVRIP(nvrHost, nvrUsername, nvrPassword)
-		if err != nil {
-			log.Printf("playback login failed for %q: %v", name, err)
-			jsonResponse(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		defer client.close()
-		stream, err := client.openRecording(name)
-		if err != nil {
-			log.Printf("playback claim failed for %q: %v", name, err)
-			jsonResponse(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		defer stream.Close()
-		go func() {
-			<-ctx.Done()
-			_ = stream.Close()
-		}()
-		fps, prefix, ended, err := stream.ProbeVideo()
-		if err != nil {
-			jsonResponse(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		fpsText := fmt.Sprint(fps)
-		setts := fmt.Sprintf("setts=pts=N/(%d*TB):dts=N/(%d*TB):duration=1/(%d*TB)", fps, fps, fps)
-		cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "h264", "-framerate", fpsText, "-i", "pipe:0", "-map", "0:v:0", "-an", "-c:v", "copy", "-bsf:v", setts, "-r", fpsText, "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			jsonResponse(w, 500, map[string]string{"error": "could not create media pipeline"})
-			return
-		}
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			jsonResponse(w, 500, map[string]string{"error": "could not create media pipeline"})
-			return
-		}
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Start(); err != nil {
-			jsonResponse(w, 500, map[string]string{"error": "could not start FFmpeg"})
-			return
-		}
-		go func() {
-			if err := stream.WriteRemainingTo(newH264SyncWriter(stdin), prefix, ended); err != nil && ctx.Err() == nil {
-				log.Printf("playback DVRIP stream failed for %q: %v", name, err)
-			}
-			_ = stdin.Close()
-		}()
-		first := make([]byte, 32*1024)
-		n, readErr := stdout.Read(first)
-		if n == 0 {
-			_ = cmd.Wait()
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = fmt.Sprint(readErr)
-			}
-			log.Printf("playback decode failed for %q: %s", name, message)
-			jsonResponse(w, 502, map[string]string{"error": "recorder video could not be decoded: " + message})
-			return
-		}
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Disposition", "inline")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(first[:n])
-		written, copyErr := io.Copy(w, stdout)
-		_ = cmd.Wait()
-		if copyErr != nil && ctx.Err() == nil {
-			log.Printf("playback response failed for %q after %d bytes: %v", name, written, copyErr)
-		}
-	}))
 	mux.HandleFunc("/api/playback/prepare", requireSession(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
@@ -401,6 +294,20 @@ func main() {
 		sizeKB, _ := strconv.ParseInt(r.URL.Query().Get("size_kb"), 10, 64)
 		job := playbackCache.prepare(name, sizeKB)
 		jsonResponse(w, 202, job)
+	}))
+	mux.HandleFunc("/api/playback/segment", requireSession(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		servePlaybackSegment(w, r)
+	}))
+	mux.HandleFunc("/api/playback/hls", requireSession(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		servePlaybackHLS(w, r)
 	}))
 	mux.HandleFunc("/api/playback/status", requireSession(func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("key")
@@ -450,7 +357,7 @@ func main() {
 		http.ServeContent(w, r, "recording.mp4", info.ModTime(), file)
 	}))
 	mux.HandleFunc("/api/about", requireSession(func(w http.ResponseWriter, r *http.Request) {
-		jsonResponse(w, 200, map[string]any{"name": "CCTV Dashboard", "version": "0.1.0", "stage": "initial build", "nvr_driver": "XMeye discovery", "recording_playback": "not yet implemented"})
+		jsonResponse(w, 200, map[string]any{"name": "CCTV Dashboard", "version": "1.0.0", "status": "operational", "nvr_driver": "XMeye DVRIP", "recording_playback": "available"})
 	}))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
 

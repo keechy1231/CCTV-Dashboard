@@ -17,17 +17,6 @@ server {
         proxy_set_header X-Original-URI $request_uri;
     }
 
-    location = /api/playback {
-        proxy_pass http://auth:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
-
     location /api/ {
         proxy_pass http://auth:3000;
         proxy_http_version 1.1;
@@ -55,6 +44,15 @@ server {
         proxy_buffering off;
         proxy_cache off;
         proxy_redirect / /rtc/;
+    }
+
+    # The application shell points at versioned frontend assets. Never cache it,
+    # otherwise a container update can leave browsers running an older UI.
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        try_files $uri =404;
     }
 
     location / {

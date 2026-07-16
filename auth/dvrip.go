@@ -154,12 +154,20 @@ func readDVRIPReply(conn net.Conn, expected uint16) (*dvripReply, error) {
 }
 
 func (c *dvripClient) openRecording(name string) (*dvripStream, error) {
+	return c.openRecordingRange(name, time.Time{}, time.Time{})
+}
+
+func (c *dvripClient) openRecordingRange(name string, rangeStart, rangeEnd time.Time) (*dvripStream, error) {
 	dataConn, err := net.DialTimeout("tcp", net.JoinHostPort(nvrHost, fmt.Sprint(dvripPort)), 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("open recorder media connection: %w", err)
 	}
 	_ = dataConn.SetDeadline(time.Now().Add(12 * time.Second))
 	startTime, endTime := playbackTimeRange(name)
+	if !rangeStart.IsZero() && rangeEnd.After(rangeStart) {
+		startTime = rangeStart.Format("2006-01-02 15:04:05")
+		endTime = rangeEnd.Format("2006-01-02 15:04:05")
+	}
 	payload := map[string]any{
 		"Name": "OPPlayBack", "SessionID": fmt.Sprintf("0x%08X", c.session),
 		"OPPlayBack": map[string]any{
@@ -198,9 +206,17 @@ func (c *dvripClient) openRecording(name string) (*dvripStream, error) {
 var playbackFileTime = regexp.MustCompile(`/(\d{4})-(\d{2})-(\d{2})/\d+/(\d{2})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2})`)
 
 func playbackTimeRange(name string) (string, string) {
+	start, end, ok := playbackTimes(name)
+	if !ok {
+		return "2000-00-00 00:00:00", "9999-12-31 23:59:59"
+	}
+	return start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05")
+}
+
+func playbackTimes(name string) (time.Time, time.Time, bool) {
 	m := playbackFileTime.FindStringSubmatch(strings.ReplaceAll(name, `\`, "/"))
 	if m == nil {
-		return "2000-00-00 00:00:00", "9999-12-31 23:59:59"
+		return time.Time{}, time.Time{}, false
 	}
 	numbers := make([]int, 9)
 	for i := range numbers {
@@ -211,7 +227,7 @@ func playbackTimeRange(name string) (string, string) {
 	if !end.After(start) {
 		end = end.AddDate(0, 0, 1)
 	}
-	return start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05")
+	return start, end, true
 }
 
 func (c *dvripClient) keepPlaybackAlive(stop <-chan struct{}) {

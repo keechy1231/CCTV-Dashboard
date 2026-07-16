@@ -7,11 +7,11 @@ The project was developed and tested with a SANNCE NBD8904T-GS-XPOE recorder usi
 ## Features
 
 - Four-camera live view through go2rtc
-- MSE, WebRTC and MJPEG playback fallbacks
+- MSE live playback through go2rtc
 - Recording search by camera, date and time
 - Browser playback of the NVR's archived H.264 recordings
 - Local MP4 preparation and caching for reliable seeking
-- Application login using HttpOnly session cookies
+- Password-protected application login
 - Digital zoom, snapshots, fullscreen view and camera ordering
 - Responsive desktop and mobile interface
 - Recorder status, model and firmware information
@@ -66,7 +66,7 @@ APP_PASSWORD=choose-a-strong-login-password
 SESSION_SECRET=replace-with-a-long-random-value
 ```
 
-`APP_USERNAME` and `APP_PASSWORD` are used to sign in to the dashboard. `SESSION_SECRET` signs session cookies and should be a unique random value of at least 32 characters. For example, a secret can be generated with:
+`APP_USERNAME` and `APP_PASSWORD` are used to sign in to the dashboard. `SESSION_SECRET` protects authenticated sessions and should be a unique random value of at least 32 characters. For example, a secret can be generated with:
 
 ```sh
 openssl rand -hex 32
@@ -137,4 +137,4 @@ Common issues:
 
 Recording playback depends on undocumented and firmware-dependent DVRIP behaviour. This build handles recorder session keepalives and remuxes downloaded H.264 video into MP4 without re-encoding. A recorder that uses a different protocol, media container or authentication flow may require additional support.
 
-When reporting a compatibility issue, include the recorder model, firmware version, relevant container logs and a description of whether live view, recording search or playback failed. Remove passwords, session cookies and private camera URLs before sharing logs.
+When reporting a compatibility issue, include the recorder model, firmware version, relevant container logs and a description of whether live view, recording search or playback failed. Remove passwords, authentication data and private camera URLs before sharing logs.
