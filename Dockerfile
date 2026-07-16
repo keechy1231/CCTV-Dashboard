@@ -9,4 +9,6 @@ FROM nginx:1.27-alpine
 COPY --from=frontend /app/dist /usr/share/nginx/html
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/40-configure.sh /docker-entrypoint.d/40-configure.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.d/40-configure.sh \
+    && chmod 755 /docker-entrypoint.d/40-configure.sh
 EXPOSE 80

@@ -132,6 +132,7 @@ Common issues:
 - **No archived footage loads:** verify the NVR credentials, recorder time, selected channel and access to TCP port `34567`.
 - **Playback takes a few seconds after scrubbing:** uncached times must be fetched from the NVR. Previously viewed portions use the `playback-cache` Docker volume.
 - **Playback reports that the recorder is busy:** the application retries transient DVRIP connection failures automatically. XMeye recorders commonly limit simultaneous live and playback connections.
+- **Login succeeds but returns to the login page:** check `docker compose logs web` for errors creating `config.json`, then rebuild the web image with `docker compose build --no-cache web`.
 
 
 ## Compatibility notes
